@@ -5,6 +5,8 @@ from openai import AzureOpenAI
 import psycopg2
 from psycopg2.extras import execute_values
 import re
+from azure.core.credentials import AzureKeyCredential
+from azure.search.documents import SearchClient
 
 load_dotenv()
 
@@ -12,6 +14,11 @@ load_dotenv()
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 DEPLOYMENT_NAME = os.getenv("DEPLOYMENT_NAME")
+
+# Azure AI Search 환경 변수
+AZURE_SEARCH_ENDPOINT = os.getenv("AZURE_SEARCH_ENDPOINT")
+AZURE_SEARCH_KEY = os.getenv("AZURE_SEARCH_KEY")
+AZURE_SEARCH_INDEX = os.getenv("AZURE_SEARCH_INDEX")
 
 # Streamlit 페이지 설정
 st.set_page_config(
@@ -24,9 +31,163 @@ st.set_page_config(
 st.title("📋 품질기반 SW 설문조사 설계 에이전트")
 st.markdown("**SW 제품의 품질모델을 정의하는 국제표준인 ISO/IEC 25010 기반으로 설문조사를 설계하여, SW 제품의 품질평가에 도움을 주기위한 목적의 에이전트 입니다.**")
 st.divider()
+
+# Azure AI Search 클라이언트 초기화 함수
+@st.cache_resource
+def get_search_client():
+    """Azure AI Search 클라이언트 생성"""
+    if not all([AZURE_SEARCH_ENDPOINT, AZURE_SEARCH_KEY, AZURE_SEARCH_INDEX]):
+        st.warning("⚠️ Azure AI Search 환경 변수가 설정되지 않았습니다. RAG 기능이 비활성화됩니다.")
+        return None
+    
+    try:
+        credential = AzureKeyCredential(AZURE_SEARCH_KEY)
+        search_client = SearchClient(
+            endpoint=AZURE_SEARCH_ENDPOINT,
+            index_name=AZURE_SEARCH_INDEX,
+            credential=credential
+        )
+        return search_client
+    except Exception as e:
+        st.error(f"❌ Azure AI Search 클라이언트 초기화 실패: {e}")
+        return None
+
+def search_iso25010_documents(quality_attribute, top_k=3):
+    """
+    Azure AI Search를 사용하여 특정 품질 속성에 대한 ISO 25010 문서 검색
+    
+    Args:
+        quality_attribute: 검색할 품질 속성명 (예: "기능 적합성", "성능 효율성")
+        top_k: 반환할 최대 문서 수
+    
+    Returns:
+        검색된 문서 내용을 결합한 문자열
+    """
+    search_client = get_search_client()
+    
+    if search_client is None:
+        return ""
+    
+    try:
+        # 한영 품질 속성 매핑 (영어 문서 검색을 위해)
+        attr_mapping = {
+            "기능 적합성": "Functional Suitability",
+            "성능 효율성": "Performance Efficiency",
+            "호환성": "Compatibility",
+            "상호작용 능력": "Interaction Capability",
+            "신뢰성": "Reliability",
+            "보안성": "Security",
+            "유지보수성": "Maintainability",
+            "유연성": "Flexibility"
+        }
+        
+        # 한국어와 영어를 모두 검색어에 포함
+        search_query = quality_attribute
+        if quality_attribute in attr_mapping:
+            search_query = f"{quality_attribute} {attr_mapping[quality_attribute]}"
+        
+        # 검색 쿼리 실행
+        results = search_client.search(
+            search_text=search_query,
+            top=top_k,
+            select=["content", "source"]  # 실제 인덱스 필드명 사용
+        )
+        
+        # 검색 결과 결합
+        context = []
+        for result in results:
+            source = result.get("source", "")
+            content = result.get("content", "")
+            
+            if source and content:
+                context.append(f"[출처: {source}]\n{content}")
+            elif content:
+                context.append(content)
+        
+        return "\n\n".join(context) if context else ""
+        
+    except Exception as e:
+        st.warning(f"⚠️ 문서 검색 중 오류 발생 ({quality_attribute}): {e}")
+        return ""
+
+def extract_main_quality_attributes(quality_selection_text):
+    """
+    2단계 품질 속성 선정 결과에서 주요 품질 속성명 추출
+    
+    Args:
+        quality_selection_text: 2단계 결과 텍스트
+    
+    Returns:
+        추출된 품질 속성명 리스트
+    """
+    # "주요 품질 속성" 섹션에서 속성명 추출
+    attributes = []
+    
+    # 패턴: "1. 기능 적합성 - 설명" 형태
+    pattern = r'\d+\.\s*([가-힣\s]+(?:적합성|효율성|호환성|능력|신뢰성|보안성|유지보수성|유연성))[\s\-]'
+    matches = re.findall(pattern, quality_selection_text)
+    
+    for match in matches:
+        attr = match.strip()
+        if attr and attr not in attributes:
+            attributes.append(attr)
+    
+    # 매칭이 없으면 ISO 25010의 9가지 품질 속성 중 텍스트에 포함된 것 추출
+    if not attributes:
+        iso_attributes = [
+            "기능 적합성", "성능 효율성", "호환성", "상호작용 능력",
+            "신뢰성", "보안성", "유지보수성", "유연성"
+        ]
+        for attr in iso_attributes:
+            if attr in quality_selection_text:
+                attributes.append(attr)
+    
+    return attributes
+
+def search_appropriate_quality_attribute(question_text, top_k=5):
+    """
+    질문 내용을 기반으로 Azure AI Search에서 관련 ISO 25010 문서 검색
+    검색된 문서에서 대표 품질속성과 세부특성을 모두 고려하여 가장 적합한 품질속성 선택
+    
+    Args:
+        question_text: 검증할 질문 텍스트
+        top_k: 반환할 최대 문서 수
+    
+    Returns:
+        검색된 문서 내용을 결합한 문자열
+    """
+    search_client = get_search_client()
+    
+    if search_client is None:
+        return ""
+    
+    try:
+        # 질문 내용으로 직접 검색
+        results = search_client.search(
+            search_text=question_text,
+            top=top_k,
+            select=["content", "source"]
+        )
+        
+        # 검색 결과 결합
+        context = []
+        for result in results:
+            source = result.get("source", "")
+            content = result.get("content", "")
+            
+            if source and content:
+                context.append(f"[출처: {source}]\n{content}")
+            elif content:
+                context.append(content)
+        
+        return "\n\n".join(context) if context else ""
+        
+    except Exception as e:
+        st.warning(f"⚠️ 품질 속성 검증 중 오류 발생: {e}")
+        return ""
     
 # 입력 폼
-st.markdown("### 📝 소프트웨어 정보 입력")
+st.markdown("## 📝 1단계: 질문 생성")
 
 # 프로젝트명 입력 (Primary Key)
 default_project_name = st.session_state.get('template_project_name', '')
@@ -315,6 +476,7 @@ if st.button("📝 설문조사 질문 생성", type="primary", use_container_wi
             st.session_state.step2_complete = False
             st.session_state.step3_complete = False
             st.session_state.step4_complete = False
+            st.session_state.step5_complete = False
             
             # 단계별 진행 상태 표시
             progress_placeholder = st.empty()
@@ -344,7 +506,7 @@ if st.button("📝 설문조사 질문 생성", type="primary", use_container_wi
                 input_text = "\n".join([f"- {key}: {value}" for key, value in input_info.items()])
                 
                 # 1단계: 분야 분석
-                progress_placeholder.info("🔍 1단계: 소프트웨어 분야를 종합적으로 분석하고 있습니다...")
+                progress_placeholder.info("🔍 1단계: 입력한 SW 정보를 종합적으로 분석하고 있습니다...")
                 
                 # 1단계 시스템 프롬프트 - 종합 분야 분석
                 domain_analysis_prompt = """당신은 소프트웨어 품질 평가 전문가입니다.
@@ -460,12 +622,11 @@ ISO/IEC 25010의 9가지 품질 속성:
 6. 보안성 (Security)
 7. 유지보수성 (Maintainability)
 8. 유연성 (Flexibility)
-9. 보안성 (Security)
 
 **질문 생성 지침:**
 1. 1단계 분야 분석과 2단계 품질 속성 선정 결과를 반영하세요.
-2. 주요 품질 속성에는 각 2-3개의 질문을 생성하세요.
-3. 부차 품질 속성에는 각 1-2개의 질문을 생성하세요.
+2. 모든 품질 속성이 적절히 포함되도록 질문을 구성하세요.
+3. 2단계에서 도출된 주요 품질 속성은 질문에 필수로 포함하세요.
 4. 응답자 특성(기술 수준, 역할)을 고려하여 적절한 용어와 표현을 사용하세요.
 5. 해당 분야/산업에 특화된 맥락을 반영하세요.
 6. 설문 문항 수가 지정된 경우 해당 개수에 맞춰 조정하세요.
@@ -488,7 +649,7 @@ ISO/IEC 25010의 9가지 품질 속성:
 
 위 분석 결과를 바탕으로 ISO/IEC 25010 기반 설문조사 질문을 생성해주세요."""
 
-                # 3단계 API 호출 - 질문 생성
+                # 3단계 API 호출 - 질문 생성 (RAG 없이)
                 question_generation_response = client.chat.completions.create(
                     model=DEPLOYMENT_NAME,
                     messages=[
@@ -502,10 +663,158 @@ ISO/IEC 25010의 9가지 품질 속성:
                 st.session_state.initial_questions = initial_questions
                 st.session_state.step3_complete = True
                 
-                # 4단계: 질문 재조정
-                progress_placeholder.info("🔧 4단계: 질문의 품질을 검증하고 재조정하고 있습니다...")
+                # 4단계: RAG 기반 품질 속성 검증 및 재분류
+                progress_placeholder.info("🔍 4단계: 품질 표준문서를 참고하여 검증하고 있습니다...")
                 
-                # 4단계 시스템 프롬프트 - 질문 재조정
+                # 초기 질문에서 질문과 품질 속성 파싱
+                def parse_questions_for_validation(questions_text):
+                    """질문 텍스트를 파싱하여 [{quality_attr, question}] 형태로 변환"""
+                    questions_list = []
+                    pattern = r'\[([^\]]+)\]\s*(.+)'
+                    
+                    for line in questions_text.split('\n'):
+                        line = line.strip()
+                        if line and line.startswith('['):
+                            match = re.match(pattern, line)
+                            if match:
+                                quality_attr = match.group(1).strip()
+                                question = match.group(2).strip()
+                                questions_list.append({
+                                    'original_quality_attr': quality_attr,
+                                    'question': question
+                                })
+                    return questions_list
+                
+                parsed_questions = parse_questions_for_validation(initial_questions)
+                
+                # 각 질문에 대해 RAG 수행 및 품질 속성 재검증
+                rag_validation_results = []
+                
+                for idx, q_data in enumerate(parsed_questions):
+                    # RAG: 질문 내용으로 문서 검색
+                    search_result = search_appropriate_quality_attribute(q_data['question'], top_k=5)
+                    
+                    if search_result:
+                        # LLM에게 가장 적절한 품질 속성 추천 요청 (요구사항1 반영)
+                        validation_prompt = """당신은 ISO/IEC 25010 품질 표준 전문가입니다.
+
+주어진 질문과 ISO 25010 문서를 분석하여, 질문에 가장 적합한 품질 속성을 결정하세요.
+
+**ISO/IEC 25010의 9가지 대표 품질 속성과 세부 특성:**
+모든 대표 품질 속성과 그 하위의 모든 세부 특성을 고려하세요.
+
+예시:
+- 기능 적합성
+  - 기능 완전성
+  - 기능 정확성
+  - 기능 적절성
+- 성능 효율성
+  - 시간 행동
+  - 자원 활용
+  - 용량
+- 신뢰성
+  - 성숙성
+  - 가용성
+  - 결함 허용성
+  - 복구 가능성
+
+**분석 규칙:**
+1. 질문 내용을 모든 대표 품질 속성과 비교
+2. 각 대표 품질 속성의 세부 특성도 모두 비교
+3. 가장 적합한 품질 속성 선택 (대표 또는 세부 특성)
+4. 반드시 ISO 25010 문서 내용을 근거로 판단
+5. 현재 할당된 품질 속성에 구애받지 말고 객관적으로 판단
+
+**출력 형식:**
+권장 품질 속성: [가장 적합한 품질 속성명 또는 "대표 품질 속성 > 세부 특성"]
+근거: [1-2문장으로 ISO 25010 문서 기반 설명]"""
+
+                        validation_user_prompt = f"""질문: {q_data['question']}
+현재 품질 속성: {q_data['original_quality_attr']}
+
+관련 ISO/IEC 25010 문서:
+{search_result}
+
+위 ISO 25010 문서를 참고하여, 이 질문에 가장 적합한 품질 속성을 모든 대표 품질 속성과 세부 특성 중에서 선택해주세요."""
+
+                        validation_response = client.chat.completions.create(
+                            model=DEPLOYMENT_NAME,
+                            messages=[
+                                {"role": "system", "content": validation_prompt},
+                                {"role": "user", "content": validation_user_prompt}
+                            ],
+                            temperature=0.3
+                        )
+                        
+                        validation_result = validation_response.choices[0].message.content
+                        
+                        # "권장 품질 속성:" 부분 추출
+                        recommended_attr_match = re.search(r'권장 품질 속성:\s*([^\n]+)', validation_result)
+                        if recommended_attr_match:
+                            recommended_attr = recommended_attr_match.group(1).strip()
+                            # 대괄호나 따옴표 제거
+                            recommended_attr = recommended_attr.strip('[]"\'')
+                            
+                            # 변경 여부 판단
+                            changed = (recommended_attr != q_data['original_quality_attr'])
+                            
+                            rag_validation_results.append({
+                                'question_index': idx,
+                                'original_attr': q_data['original_quality_attr'],
+                                'recommended_attr': recommended_attr,
+                                'reason': validation_result,
+                                'changed': changed
+                            })
+                        else:
+                            rag_validation_results.append({
+                                'question_index': idx,
+                                'original_attr': q_data['original_quality_attr'],
+                                'recommended_attr': q_data['original_quality_attr'],
+                                'reason': validation_result,
+                                'changed': False
+                            })
+                    else:
+                        # RAG 검색 실패 시 원본 유지
+                        rag_validation_results.append({
+                            'question_index': idx,
+                            'original_attr': q_data['original_quality_attr'],
+                            'recommended_attr': q_data['original_quality_attr'],
+                            'reason': '문서 검색 실패로 원본 유지',
+                            'changed': False
+                        })
+                
+                # 변경된 질문들을 기반으로 최종 질문 재구성
+                refined_questions_lines = []
+                for idx, q_data in enumerate(parsed_questions):
+                    validation = rag_validation_results[idx]
+                    refined_questions_lines.append(f"[{validation['recommended_attr']}] {q_data['question']}")
+                
+                refined_questions_with_rag = "\n".join(refined_questions_lines)
+                
+                # 변경 사항 요약
+                changes_summary = []
+                for validation in rag_validation_results:
+                    if validation['changed']:
+                        changes_summary.append(
+                            f"질문 {validation['question_index']+1}: {validation['original_attr']} → {validation['recommended_attr']}"
+                        )
+                
+                rag_validation_summary = ""
+                if changes_summary:
+                    rag_validation_summary = "**품질 속성 변경 내역:**\n" + "\n".join(changes_summary)
+                else:
+                    rag_validation_summary = "모든 질문의 품질 속성이 적절하여 변경 사항이 없습니다."
+                
+                # 세션에 저장
+                st.session_state.rag_validation_results = rag_validation_results
+                st.session_state.rag_validation_summary = rag_validation_summary
+                st.session_state.refined_questions_with_rag = refined_questions_with_rag
+                st.session_state.step4_complete = True
+                
+                # 5단계: 최종 검토 (4단계에서 품질 속성이 재분류된 질문 사용)
+                progress_placeholder.info("🔧 5단계: 최종 검토를 진행하고 있습니다...")
+                
+                # 5단계 시스템 프롬프트 - 최종 검토
                 refinement_prompt = """당신은 설문조사 설계 전문가입니다.
 생성된 설문조사 질문들을 검토하고 다음 문제들을 찾아 수정하세요:
 
@@ -536,11 +845,14 @@ ISO/IEC 25010의 9가지 품질 속성:
 수정이 필요없는 경우:
 검토 완료: 모든 질문이 적절합니다. 수정 사항이 없습니다."""
 
+                # 4단계에서 품질 속성이 재분류된 질문 사용
+                questions_for_refinement = st.session_state.get('refined_questions_with_rag', initial_questions)
+                
                 refinement_user_prompt = f"""다음 설문조사 질문들을 검토하고 필요시 수정해주세요:
 
-{initial_questions}"""
+{questions_for_refinement}"""
 
-                # 4단계 API 호출 - 질문 재조정
+                # 5단계 API 호출 - 최종 검토
                 refinement_response = client.chat.completions.create(
                     model=DEPLOYMENT_NAME,
                     messages=[
@@ -552,28 +864,29 @@ ISO/IEC 25010의 9가지 품질 속성:
                 
                 refinement_result = refinement_response.choices[0].message.content
                 st.session_state.refinement_result = refinement_result
-                st.session_state.step4_complete = True
+                st.session_state.step5_complete = True
                 
-                # 최종 질문 생성 - 4단계에서 수정이 있었다면 반영
+                # 최종 질문 생성 - 5단계에서 수정이 있었다면 반영
                 if "수정 사항이 없습니다" in refinement_result or "모든 질문이 적절합니다" in refinement_result:
-                    # 수정 사항이 없으면 3단계 질문 그대로 사용
-                    final_questions = initial_questions
+                    # 수정 사항이 없으면 4단계 질문 그대로 사용
+                    final_questions = questions_for_refinement
                 else:
-                    # 수정이 있었다면 3단계 질문에 수정 사항을 반영
+                    # 수정이 있었다면 4단계 질문에 수정 사항을 반영
                     # LLM을 한 번 더 호출하여 최종 질문 생성
                     final_generation_prompt = """당신은 설문조사 설계 전문가입니다.
-3단계에서 생성된 초기 질문과 4단계의 수정 내역을 바탕으로 최종 설문조사 질문을 생성하세요.
+4단계에서 품질 속성이 재분류된 질문과 5단계의 수정 내역을 바탕으로 최종 설문조사 질문을 생성하세요.
 
 **생성 규칙:**
-1. 4단계에서 수정이 필요하다고 지적된 질문은 수정된 버전을 사용하세요.
+1. 5단계에서 수정이 필요하다고 지적된 질문은 수정된 버전을 사용하세요.
 2. 수정이 필요없었던 질문은 원본 그대로 사용하세요.
 3. 모든 질문을 [품질 속성명] 질문 형식으로 출력하세요.
-4. 질문만 나열하고 추가 설명은 붙이지 마세요."""
+4. 품질 속성명은 4단계에서 재분류된 것을 유지하세요.
+5. 질문만 나열하고 추가 설명은 붙이지 마세요."""
 
-                    final_generation_user_prompt = f"""3단계 초기 질문:
-{initial_questions}
+                    final_generation_user_prompt = f"""4단계 품질 속성 재분류된 질문:
+{questions_for_refinement}
 
-4단계 수정 내역:
+5단계 수정 내역:
 {refinement_result}
 
 위 내용을 바탕으로 최종 설문조사 질문을 생성해주세요."""
@@ -647,13 +960,17 @@ if st.session_state.get('generation_complete', False):
     if st.session_state.get('step3_complete', False):
         st.success("✅ 3단계: 초기 질문 생성 완료")
     
-    # 4단계 완료 메시지
+    # 4단계 완료 메시지 및 RAG 상태 표시
     if st.session_state.get('step4_complete', False):
-        st.success("✅ 4단계: 질문 재조정 완료")
+        st.success("✅ 4단계: RAG 기반 품질 속성 검증 및 재분류 완료")
+    
+    # 5단계 완료 메시지
+    if st.session_state.get('step5_complete', False):
+        st.success("✅ 5단계: 최종 검토 완료")
     
     st.markdown("---")
     
-    # 1-4단계 결과 expander
+    # 1-5단계 결과 expander
     with st.expander("🔍 1단계: 분야 분석 결과 보기", expanded=False):
         st.markdown(st.session_state.domain_analysis)
     
@@ -663,7 +980,22 @@ if st.session_state.get('generation_complete', False):
     with st.expander("📝 3단계: 초기 질문 생성 결과 보기", expanded=False):
         st.markdown(st.session_state.initial_questions)
     
-    with st.expander("🔧 4단계: 질문 재조정 결과 보기 (수정된 항목만 표시)", expanded=False):
+    with st.expander("🔍 4단계: RAG 기반 품질 속성 재분류 결과 보기", expanded=False):
+        st.markdown(st.session_state.rag_validation_summary)
+        
+        # 변경 내역 상세 보기
+        if st.session_state.get('rag_validation_results'):
+            st.markdown("---")
+            st.markdown("**상세 검증 결과:**")
+            for idx, validation in enumerate(st.session_state.rag_validation_results):
+                if validation['changed']:
+                    st.markdown(f"**질문 {idx+1}:**")
+                    st.markdown(f"- 원본 품질 속성: `{validation['original_attr']}`")
+                    st.markdown(f"- 재분류된 품질 속성: `{validation['recommended_attr']}`")
+                    with st.expander(f"재분류 근거 보기", expanded=False):
+                        st.text(validation['reason'])
+        
+    with st.expander("🔧 5단계: 최종 검토 결과 보기 (수정된 항목만 표시)", expanded=False):
         st.markdown(st.session_state.refinement_result)
     
     st.markdown("---")
@@ -737,7 +1069,10 @@ if st.session_state.get('generation_complete', False):
 === 3단계: 초기 질문 생성 ===
 {st.session_state.initial_questions}
 
-=== 4단계: 질문 재조정 ===
+=== 4단계: RAG 기반 품질 속성 재분류 ===
+{st.session_state.rag_validation_summary}
+
+=== 5단계: 최종 검토 ===
 {st.session_state.refinement_result}
 
 === 선택된 최종 설문조사 질문 ===
@@ -755,12 +1090,14 @@ if st.session_state.get('generation_complete', False):
                         cur = conn.cursor()
 
                         # 1️⃣ surveys 테이블에 기본 정보 저장
+                        # 1️⃣ surveys 테이블에 기본 정보 저장 (metric_completed 기본값 N)
                         cur.execute("""
                             INSERT INTO surveys (
                                 project_name, software_description, evaluation_purpose,
                                 respondent_info, expected_respondents, development_scale,
-                                user_scale, operating_environment, industry_field, survey_item_count
-                            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                                user_scale, operating_environment, industry_field, survey_item_count,
+                                metric_completed
+                            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                             RETURNING id;
                         """, (
                             st.session_state.project_name,
@@ -772,17 +1109,19 @@ if st.session_state.get('generation_complete', False):
                             st.session_state.user_scale,
                             st.session_state.operating_environment,
                             st.session_state.industry_field,
-                            st.session_state.survey_item_count
+                            st.session_state.survey_item_count,
+                            'N'  # metric_completed 초기값
                         ))
 
                         survey_id = cur.fetchone()[0]
 
-                        # 2️⃣ generation_steps 테이블에 1~4단계 결과 저장
+                        # 2️⃣ generation_steps 테이블에 1~5단계 결과 저장
                         steps_data = [
                             (survey_id, 1, "도메인 분석", st.session_state.domain_analysis),
                             (survey_id, 2, "품질 속성 선정", st.session_state.quality_selection),
                             (survey_id, 3, "초기 질문 생성", st.session_state.initial_questions),
-                            (survey_id, 4, "질문 재조정", st.session_state.refinement_result)
+                            (survey_id, 4, "RAG 기반 품질 속성 재분류", st.session_state.rag_validation_summary),
+                            (survey_id, 5, "최종 검토", st.session_state.refinement_result)
                         ]
 
                         execute_values(cur, """

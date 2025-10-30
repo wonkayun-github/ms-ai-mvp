@@ -9,10 +9,10 @@ st.set_page_config(
 
 # 멀티페이지 네비게이션 설정
 pages = [
-    st.Page("iso25010_rag.py", title="RAG 구성", icon="⚙️"),
     st.Page("survey_gen.py", title="1단계: 질문 생성", icon="📝"),
     st.Page("metric_gen.py", title="2단계: 메트릭 구성", icon="📊"),
-    st.Page("framework_gen.py", title="3단계: 평가 프레임워크 생성", icon="🎯"),
+    # st.Page("framework_gen.py", title="3단계: 평가 프레임워크 생성", icon="🎯"),
+    st.Page("iso25010_rag.py", title="RAG 데이터 구성", icon="⚙️"),
 ]
 
 page = st.navigation(pages)

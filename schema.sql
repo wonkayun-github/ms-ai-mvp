@@ -3,7 +3,7 @@ DROP TABLE IF EXISTS generation_steps CASCADE;
 DROP TABLE IF EXISTS survey_questions CASCADE;
 DROP TABLE IF EXISTS metrics CASCADE;
 
--- surveys 테이블 (기본 정보)
+-- surveys 테이블 (metric_completed 컬럼 포함)
 CREATE TABLE surveys (
     id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     project_name VARCHAR(500) NOT NULL UNIQUE,
@@ -16,6 +16,7 @@ CREATE TABLE surveys (
     operating_environment VARCHAR(200),
     industry_field VARCHAR(200),
     survey_item_count INT,
+    metric_completed CHAR(1) DEFAULT 'N' CHECK (metric_completed IN ('Y', 'N')),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

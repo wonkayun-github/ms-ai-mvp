@@ -61,11 +61,11 @@ except Exception:
     pass
 
 # === Streamlit 페이지 설정 ===
-st.set_page_config(page_title="RAG 구성", layout="wide")
-st.title("📘 RAG 구성")
+st.set_page_config(page_title="RAG 데이터 구성", layout="wide")
+st.title("📘 RAG 데이터 구성")
 
 # --- 1️⃣ 문서 업로드 ---
-st.header("📤 문서 업로드")
+st.markdown("#### 📤 문서 업로드")
 uploaded_file = st.file_uploader("TXT 형식의 문서를 업로드하세요", type=["txt"], label_visibility="collapsed")
 
 if uploaded_file:
@@ -74,7 +74,7 @@ if uploaded_file:
     st.success(f"✅ '{uploaded_file.name}' 업로드 완료!")
 
 # --- 2️⃣ 업로드된 문서 목록 ---
-st.header("📂 업로드된 문서 목록")
+st.markdown("#### 📂 업로드된 문서 목록")
 container_client = blob_service_client.get_container_client(AZURE_STORAGE_CONTAINER_NAME)
 blobs = list(container_client.list_blobs())
 
@@ -98,7 +98,7 @@ if "indexed_files" not in st.session_state:
     st.session_state.indexed_files = set()
 
 if 'index_btn' in locals() and index_btn:
-    st.header("⚙️ 인덱싱 진행 중...")
+    st.markdown("### ⚙️ 인덱싱 진행 중...")
 
     index_client = SearchIndexClient(endpoint=search_endpoint, credential=AzureKeyCredential(search_key))
 
@@ -158,7 +158,7 @@ if 'index_btn' in locals() and index_btn:
     st.session_state.indexed_files.add(selected_file)
 
 # --- 4️⃣ 질의응답 (RAG) ---
-st.header("💬 ISO 25010 기반 질의응답")
+st.markdown("#### 💬 질의응답 테스트")
 query = st.text_input("질문을 입력하세요", placeholder="예: ISO 25010에서 기능적 적합성이란 무엇인가요?")
 if st.button("🔎 답변 생성"):
     if not query:

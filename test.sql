@@ -1,2 +1,2 @@
-select * from metrics
+select * from surveys
 ;
