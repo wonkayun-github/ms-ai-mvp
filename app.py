@@ -2,7 +2,7 @@ import streamlit as st
 
 # 페이지 설정
 st.set_page_config(
-    page_title="SW 평가 설문조사 시스템",
+    page_title="품질기반 SW 설문조사 설계 에이전트",
     page_icon="📋",
     layout="wide"
 )
@@ -11,7 +11,6 @@ st.set_page_config(
 pages = [
     st.Page("survey_gen.py", title="1단계: 질문 생성", icon="📝"),
     st.Page("metric_gen.py", title="2단계: 메트릭 구성", icon="📊"),
-    # st.Page("framework_gen.py", title="3단계: 평가 프레임워크 생성", icon="🎯"),
     st.Page("iso25010_rag.py", title="RAG 데이터 구성", icon="⚙️"),
 ]
 

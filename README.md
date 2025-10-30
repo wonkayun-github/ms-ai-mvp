@@ -37,11 +37,7 @@
 ---
 ## 🏗️ 아키텍처
 ```
-[사용자] ↔ [Streamlit UI] ↔ [검색 로직] ↔ [Azure Search]
-                ↓
-         [OpenAI GPT-4o-mini] ← [컨텍스트 구성]
-       
-       → [Slack]
+내일 클루드에게 문의하기
 ```
 
 ---
@@ -49,7 +45,7 @@
 
 ```
 ms-ai-mvp/
-├── app.py                    # 메인 애플리케이션 (시스템 상태 모니터링 추가)
+├── app.py                    # 메인 애플리케이션
 ├── update_data.py            # 데이터 업데이트 스크립트
 ├── requirements.txt          # Python 패키지 의존성
 ├── streamlit.sh              # Azure 환경 배포용 Python 패키지 의존성 설치 및 실행 (최초 실행 시 사용)
