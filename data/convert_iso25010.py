@@ -3,7 +3,7 @@ ISO 25010 텍스트 문서를 Azure AI Search에 업로드할 수 있는 구조�
 입력: ISO25010.txt
 출력: 구조화된 JSON 데이터 및 Azure AI Search 업로드 준비
 """
-
+import os
 import re
 import json
 
