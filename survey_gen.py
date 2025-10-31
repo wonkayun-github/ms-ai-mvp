@@ -17,7 +17,7 @@ DEPLOYMENT_NAME = os.getenv("DEPLOYMENT_NAME")
 
 # Azure AI Search 환경 변수
 AZURE_SEARCH_ENDPOINT = os.getenv("AZURE_SEARCH_ENDPOINT")
-AZURE_SEARCH_KEY = os.getenv("AZURE_SEARCH_KEY")
+AZURE_SEARCH_API_KEY = os.getenv("AZURE_SEARCH_API_KEY")
 AZURE_SEARCH_INDEX = os.getenv("AZURE_SEARCH_INDEX")
 
 # Streamlit 페이지 설정
@@ -36,12 +36,12 @@ st.divider()
 @st.cache_resource
 def get_search_client():
     """Azure AI Search 클라이언트 생성"""
-    if not all([AZURE_SEARCH_ENDPOINT, AZURE_SEARCH_KEY, AZURE_SEARCH_INDEX]):
+    if not all([AZURE_SEARCH_ENDPOINT, AZURE_SEARCH_API_KEY, AZURE_SEARCH_INDEX]):
         st.warning("⚠️ Azure AI Search 환경 변수가 설정되지 않았습니다. RAG 기능이 비활성화됩니다.")
         return None
     
     try:
-        credential = AzureKeyCredential(AZURE_SEARCH_KEY)
+        credential = AzureKeyCredential(AZURE_SEARCH_API_KEY)
         search_client = SearchClient(
             endpoint=AZURE_SEARCH_ENDPOINT,
             index_name=AZURE_SEARCH_INDEX,
